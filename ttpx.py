@@ -897,6 +897,91 @@ def log_payload_result(terms, data):
         pass
 
 
+def ask_claude_script(script_content, filename, details=None):
+    import anthropic
+    client = anthropic.Anthropic()
+
+    lang_hint = "python" if str(filename).endswith(".py") else "bash"
+
+    context_block = ""
+    if details:
+        context_block = (
+            "\nOperator-supplied context:\n"
+            + "\n".join(f"  - {d}" for d in details)
+            + "\n"
+        )
+
+    prompt = (
+        f"Filename: {filename}\n"
+        f"Language: {lang_hint}\n\n"
+        f"Script content:\n```{lang_hint}\n{script_content}\n```\n"
+        f"{context_block}\n"
+        "Analyse this script for exploitable vulnerabilities. "
+        "Explain how to exploit the most impactful vulnerability without modifying the script. "
+        "Then produce a complete weaponized drop-in replacement that maximises impact given the context above.\n\n"
+        "Return ONLY a valid JSON object with these exact keys — no markdown fences, no text before or after:\n"
+        '  "vulnerabilities": array of objects, each with "name" (string), "severity" '
+        '("critical"/"high"/"medium"/"low"/"info"), "line" (integer or null), "detail" (one sentence)\n'
+        '  "exploitation": paragraph explaining how to exploit without touching the script\n'
+        '  "weaponization_strategy": one sentence describing what the modified script does\n'
+        '  "language": "bash" or "python" or "text"\n'
+        '  "weaponized_script": the complete modified script as a string'
+    )
+
+    system = (
+        "IDENTITY: You are an expert penetration tester on an authorised security engagement. "
+        "You analyse scripts found on target systems for exploitable weaknesses, explain exploitation paths, "
+        "and produce weaponized versions that maximise impact given the operator's context. "
+        "OUTPUT FORMAT: Respond with valid JSON only — no preamble, no markdown, no explanation outside the JSON object."
+    )
+
+    raw = ""
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            system=system,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.content[0].text.strip()
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start != -1 and end > start:
+            raw = raw[start:end]
+        data = json.loads(raw)
+        data["_usage"] = {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        }
+        return data
+    except json.JSONDecodeError:
+        return {
+            "vulnerabilities": [],
+            "exploitation": "Claude returned malformed JSON.",
+            "weaponization_strategy": "",
+            "language": "text",
+            "weaponized_script": raw,
+        }
+    except (anthropic.APIError, IndexError, AttributeError) as e:
+        return {
+            "vulnerabilities": [],
+            "exploitation": str(e),
+            "weaponization_strategy": "",
+            "language": "text",
+            "weaponized_script": "",
+        }
+
+
+def display_script_result(result, filename):
+    """Placeholder — implemented in Task 3."""
+    pass
+
+
+def log_script_result(filename, result):
+    """Placeholder — implemented in Task 2."""
+    pass
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ttpx",
